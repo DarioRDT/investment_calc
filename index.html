@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>מחשבון ריבית דריבית</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <style>
+        :root { --primary-color: #2c3e50; --secondary-color: #3498db; --bg-color: #f4f7f6; }
+        body { font-family: 'Calibri', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: var(--bg-color); color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 10px; box-sizing: border-box; }
+        .sticky-header {  top: 0; background: #fff; z-index: 100; padding: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; margin-bottom: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; align-items: end; }
+        .form-group { display: flex; flex-direction: column; width: 100%; }
+        .form-group label { font-weight: bold; margin-bottom: 5px; font-size: 15px; }
+        .form-group input { padding: 5px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; box-sizing: border-box; width: 100%; }
+        
+        /* כרטיסיות סיכום - הגדרה גמישה */
+        .summary-boxes { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 20px; }
+        .summary-box { flex: 1 1 200px; background: var(--primary-color); color: #fff; padding: 10px; border-radius: 8px; text-align: center; }
+        .summary-box h3 { margin: 0 0 5px 0; font-size: 13px; }
+        .summary-box p { margin: 0; font-size: 16px; font-weight: bold; }
+        
+        .chart-container { width: 100%; height: 400px; margin-bottom: 30px; }
+        .table-responsive { overflow-x: auto; width: 100%; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { padding: 10px; text-align: right; border-bottom: 1px solid #ddd; }
+        th { background-color: var(--primary-color); color: #fff; }
+        
+        .btn-group { display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }
+        .btn { padding: 10px; border: none; border-radius: 5px; color: white; cursor: pointer; width: 80px; font-size: 18px; }
+
+        /* התאמות מובייל */
+        @media (max-width: 768px) {
+            .sticky-header { grid-template-columns: 1fr 1fr; }
+            .summary-box { flex: 1 1 40%; } /* מכריח 2 בשורה */
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="sticky-header">
+        <div class="form-group"><label>השקעה ראשונית (₪)</label><input type="number" id="initial" value="100000" oninput="calculate()"></div>
+        <div class="form-group"><label>הפקדה חודשית (₪)</label><input type="number" id="monthly" value="500" oninput="calculate()"></div>
+        <div class="form-group"><label>תשואה שנתית (%)</label><input type="number" id="yield" value="8" step="0.1" oninput="calculate()"></div>
+        <div class="form-group"><label>מספר שנים</label><input type="number" id="years" value="20" oninput="calculate()"></div>
+        <div class="form-group"><label>דמי ניהול מצבירה (%)</label><input type="number" id="fees" value="0.5" step="0.1" oninput="calculate()"></div>
+    </div>
+
+    <div id="export-content">
+        <div class="summary-boxes">
+            <div class="summary-box"><h3>סך השקעות</h3><p id="total-inv">0</p></div>
+            <div class="summary-box"><h3>סך עמלות</h3><p id="total-fees">0</p></div>
+            <div class="summary-box"><h3>סך רווחים</h3><p id="total-profit">0</p></div>
+            <div class="summary-box"><h3>צפי בסוף תקופה</h3><p id="total-sum">0</p></div>
+        </div>
+        <div class="chart-container"><canvas id="investmentChart"></canvas></div>
+        
+        <div class="btn-group" data-html2canvas-ignore="true">
+            <button class="btn" onclick="exportPDF()" title="PDF" style="background-color: #da251d;"><i class="fa-solid fa-file-pdf"></i></button>
+            <button class="btn" onclick="exportExcel()" title="Excel" style="background-color: #107c41;"><i class="fa-solid fa-file-excel"></i></button>
+        </div>
+
+        <div class="table-responsive">
+            <table id="results-table">
+                <thead><tr><th>שנה</th><th>סך הפקדות</th><th>סך עמלות</th><th>סך רווחים</th><th>צבירה</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    let chartInstance = null;
+    let exportData = [];
+
+    function calculate() {
+        const initial = parseFloat(document.getElementById('initial').value) || 0;
+        const monthly = parseFloat(document.getElementById('monthly').value) || 0;
+        const annualYield = (parseFloat(document.getElementById('yield').value) || 0) / 100;
+        const years = parseInt(document.getElementById('years').value) || 0;
+        const annualFees = (parseFloat(document.getElementById('fees').value) || 0) / 100;
+
+        let balance = initial;
+        let totalDeposited = initial;
+        let totalFees = 0;
+        let totalProfit = 0;
+
+        const tbody = document.querySelector('#results-table tbody');
+        tbody.innerHTML = '';
+        exportData = [];
+        let labels = [], invData = [], feeData = [], balanceData = [];
+
+        for (let y = 1; y <= years; y++) {
+            let yearFees = 0;
+            let yearProfit = 0;
+            for (let m = 1; m <= 12; m++) {
+                let monthlyYield = (balance * (annualYield / 12));
+                let monthlyFee = (balance * (annualFees / 12));
+                balance += (monthly + monthlyYield - monthlyFee);
+                yearFees += monthlyFee;
+                yearProfit += (monthlyYield - monthlyFee);
+                totalDeposited += monthly;
+            }
+            totalFees += yearFees;
+            totalProfit += yearProfit;
+
+            labels.push(y);
+            invData.push(totalDeposited.toFixed(0));
+            feeData.push(totalFees.toFixed(0));
+            balanceData.push(balance.toFixed(0));
+
+            tbody.innerHTML += `<tr><td>${y}</td><td>${format(totalDeposited)}</td><td>${format(totalFees)}</td><td>${format(totalProfit)}</td><td>${format(balance)}</td></tr>`;
+            exportData.push({"שנה": y, "סך הפקדות": totalDeposited.toFixed(0), "סך עמלות": totalFees.toFixed(0), "סך רווחים": totalProfit.toFixed(0), "צבירה": balance.toFixed(2)});
+        }
+        document.getElementById('total-inv').innerText = format(totalDeposited);
+        document.getElementById('total-fees').innerText = format(totalFees);
+        document.getElementById('total-profit').innerText = format(totalProfit);
+        document.getElementById('total-sum').innerText = format(balance);
+        drawChart(labels, invData, feeData, balanceData);
+    }
+
+    function drawChart(labels, inv, fee, bal) {
+        const ctx = document.getElementById('investmentChart').getContext('2d');
+        if (chartInstance) chartInstance.destroy();
+        chartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    { label: 'סך השקעות', data: inv, backgroundColor: 'rgba(52, 152, 219, 0.2)', borderColor: '#3498db', fill: true, tension: 0.3 },
+                    { label: 'סך עמלות', data: fee.map(x => -x), backgroundColor: 'rgba(231, 76, 60, 0.2)', borderColor: '#e74c3c', fill: true, tension: 0.3 },
+                    { label: 'צבירה', data: bal, backgroundColor: 'rgba(39, 174, 96, 0.2)', borderColor: '#27ae60', fill: true, tension: 0.3 }
+                ]
+            },
+            options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'שנה' } }, y: { stacked: false } } }
+        });
+    }
+
+    function format(num) { return Math.round(num).toLocaleString('he-IL'); }
+    function exportPDF() { html2pdf().from(document.getElementById('export-content')).save('investment.pdf'); }
+    function exportExcel() { XLSX.writeFile(XLSX.utils.json_to_sheet(exportData), "investment.xlsx"); }
+    document.addEventListener("DOMContentLoaded", calculate);
+</script>
+</body>
+</html>
